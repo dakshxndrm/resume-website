@@ -1,0 +1,12 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+sqlalchemy==2.0.31
+psycopg[binary]
+alembic==1.13.2
+pydantic==2.8.2
+pydantic-settings==2.3.4
+firebase-admin==6.5.0
+python-multipart==0.0.9
+pymupdf==1.24.9
+python-docx==1.1.2
+rank-bm25==0.2.2
