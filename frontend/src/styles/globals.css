@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Color tokens (RGB triplets for Tailwind alpha support) */
+  --color-primary: 79 70 229;    /* #4F46E5 indigo */
+  --color-secondary: 15 23 42;   /* #0F172A slate-900 */
+  --color-accent: 16 185 129;    /* #10B981 emerald */
+  --color-neutral: 100 116 139;  /* #64748B slate-500 */
+  --color-success: 16 185 129;
+  --color-error: 239 68 68;      /* #EF4444 */
+  --color-surface: 248 250 252;  /* #F8FAFC */
+}
+
+html { scroll-behavior: smooth; }
+body { @apply text-secondary antialiased; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.focus-ring {
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2;
+}
