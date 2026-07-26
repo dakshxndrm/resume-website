@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime
 
@@ -6,11 +7,27 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import ResumeIn, ScoreRequest
 from app.core.auth import get_current_user, get_optional_user
+from app.core.config import settings
 from app.core.db import get_db
 from app.models.models import ResumeRecord, ScoreReportRecord, User
+from app.services.llm_router import generate_suggestions, ping
 from app.services.scoring import score_resume
 
 router = APIRouter()
+
+
+# ---------- LLM suggestion swap ----------
+def _resume_to_text(resume: dict) -> str:
+    """Flatten a structured resume into text for the LLM prompt."""
+    return json.dumps(resume, ensure_ascii=False)
+
+
+def _apply_llm_suggestions(result: dict, resume_text: str, job_description: str | None) -> dict:
+    """Swap in AI suggestions if we got any; otherwise keep the rule-based ones."""
+    ai = generate_suggestions(resume_text, job_description, result)
+    if ai:
+        return {**result, "suggestions": ai, "suggestionsSource": "ai"}
+    return {**result, "suggestionsSource": "rules"}
 
 
 # ---------- auth ----------
@@ -43,6 +60,7 @@ def _require_user(claims: dict, db: Session) -> User:
 def score(req: ScoreRequest, claims: dict | None = Depends(get_optional_user), db: Session = Depends(get_db)):
     """Score a structured resume. Works logged-out (frictionless); persists when logged in."""
     result = score_resume(req.resume, req.job_description)
+    result = _apply_llm_suggestions(result, _resume_to_text(req.resume), req.job_description)
     report_id = str(uuid.uuid4())
     payload = {**result, "id": report_id, "jobTitle": req.job_description, "createdAt": datetime.utcnow().isoformat()}
 
@@ -64,13 +82,17 @@ async def score_upload(
     claims: dict | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Upload a resume file for parsing + scoring.
+    """Upload a resume file (PDF/DOCX) for parsing + scoring."""
+    try:
+        # lazy import: parsing.py needs PyMuPDF + python-docx, so a missing
+        # install breaks only this endpoint instead of the whole app
+        from app.services.parsing import parse_resume
+    except ImportError as exc:
+        raise HTTPException(503, f"File parsing unavailable - pip install PyMuPDF python-docx ({exc})")
 
-    Phase 1 wires the real parser (PyMuPDF/pdfplumber + spaCy NER) here.
-    For now: accept the file, return a stub report id so the frontend flow works.
-    """
-    _ = await file.read()  # parser lands in Phase 1
-    result = score_resume({"skills": [], "work": [], "education": [], "projects": []}, job_description)
+    parsed = parse_resume(await file.read(), file.filename or "")
+    result = score_resume(parsed, job_description)
+    result = _apply_llm_suggestions(result, parsed["raw_text"], job_description)
     report_id = str(uuid.uuid4())
     payload = {**result, "id": report_id, "jobTitle": job_description, "createdAt": datetime.utcnow().isoformat()}
     db.add(ScoreReportRecord(id=report_id, job_description=job_description, total=result["total"], payload=payload, scorer="stub"))
@@ -129,3 +151,15 @@ _STUB_SKILLS = {
 @router.get("/skills/suggest")
 def suggest_skills(role: str):
     return {"skills": _STUB_SKILLS.get(role.lower(), ["Communication", "Git", "Problem Solving"])}
+
+
+# ---------- debug ----------
+@router.get("/llm/health")
+def llm_health():
+    """Is Groq reachable and is the model name valid? Never echoes the API key."""
+    if not (settings.groq_api_key or "").strip():
+        return {"llm": "disabled"}
+    error = ping()
+    if error:
+        return {"llm": "error", "model": settings.groq_model, "detail": error}
+    return {"llm": "ok", "model": settings.groq_model}
