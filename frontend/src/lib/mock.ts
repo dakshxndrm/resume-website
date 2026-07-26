@@ -25,10 +25,3 @@ export const mockReport: ScoreReport = {
   missingSkills: ["TypeScript", "Jest", "CI/CD", "Accessibility", "Next.js"],
   createdAt: new Date().toISOString(),
 };
-
-export const roleSkillSuggestions: Record<string, string[]> = {
-  "frontend developer": ["React", "TypeScript", "Next.js", "Tailwind CSS", "Jest", "Accessibility", "REST APIs", "Git"],
-  "backend developer": ["Python", "FastAPI", "PostgreSQL", "Docker", "Redis", "REST APIs", "CI/CD", "AWS"],
-  "data scientist": ["Python", "Pandas", "scikit-learn", "PyTorch", "SQL", "Statistics", "Data Visualization", "MLOps"],
-  default: ["Communication", "Problem Solving", "Git", "Agile", "Teamwork"],
-};

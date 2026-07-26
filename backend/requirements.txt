@@ -2,7 +2,6 @@ fastapi==0.111.0
 uvicorn[standard]==0.30.1
 sqlalchemy==2.0.31
 psycopg2-binary==2.9.9
-alembic==1.13.2
 pydantic==2.8.2
 pydantic-settings==2.3.4
 firebase-admin==6.5.0
@@ -14,5 +13,5 @@ PyMuPDF==1.24.9
 python-docx==1.1.2
 # imported by app/services/scoring.py (BM25 semantic score) — was missing too
 rank-bm25==0.2.2
-# imported by app/services/scoring.py (BM25 semantic score)
-rank-bm25==0.2.2
+# PDF export (app/services/pdf_export.py). Pure-Python wheels — no GTK needed on Windows.
+reportlab==4.2.2

@@ -7,6 +7,9 @@ export interface ResumeBasics {
   url?: string;
   location?: string;
   summary?: string;
+  /** Extra profile URLs (LinkedIn, GitHub, portfolio). Optional — older saved
+   *  resumes without it still load, and the backend accepts any basics shape. */
+  links?: string[];
 }
 
 export interface WorkItem {

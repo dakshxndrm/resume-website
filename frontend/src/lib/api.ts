@@ -4,6 +4,7 @@
  * so the FastAPI backend can verify identity and key data to the Firebase UID.
  */
 import { getIdTokenSafe } from "@/lib/firebase";
+import { toScorePayload } from "@/lib/resume-text";
 import type { Resume, ScoreReport } from "@/types/resume";
 
 const BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
@@ -41,12 +42,18 @@ export const api = {
     if (jobDescription) form.append("job_description", jobDescription);
     return requestForm<ScoreReport & { report_id: string }>("/score/upload", form);
   },
-  /** Score structured resume (from builder/editor) against a job title/description. */
+  /** Score structured resume (from builder/editor) against a job title/description.
+   *  toScorePayload adds raw_text/word_count so the backend's semantic + formatting
+   *  signals see real content; the request/response shapes are unchanged. */
   scoreResume(resume: Resume, jobDescription?: string) {
     return request<ScoreReport>("/score", {
       method: "POST",
-      body: JSON.stringify({ resume, job_description: jobDescription }),
+      body: JSON.stringify({ resume: toScorePayload(resume), job_description: jobDescription }),
     });
+  },
+  /** Render the resume to an ATS-friendly PDF. Works signed out. */
+  exportResumePdf(resume: Resume) {
+    return requestBlob("/resumes/export", resume);
   },
   getReport(id: string) {
     return request<ScoreReport>(`/report/${id}`);
@@ -69,6 +76,24 @@ export const api = {
     return request<{ id: string }>("/auth/sync", { method: "POST" });
   },
 };
+
+/** Like request(), but the response is a file. Errors still arrive as JSON. */
+async function requestBlob(path: string, body: unknown): Promise<Blob> {
+  const token = await getIdTokenSafe();
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, detail?.detail ?? res.statusText);
+  }
+  return res.blob();
+}
 
 async function requestForm<T>(path: string, form: FormData): Promise<T> {
   const token = await getIdTokenSafe();

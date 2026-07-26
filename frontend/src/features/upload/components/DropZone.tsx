@@ -4,12 +4,15 @@ import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { UploadCloud, FileText } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Textarea } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { api, ApiError } from "@/lib/api";
+import { setCarry } from "@/lib/carry";
 
 export function DropZone() {
   const [drag, setDrag] = useState(false);
   const [file, setFile] = useState<File | null>(null);
+  const [jobDescription, setJobDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
@@ -28,7 +31,10 @@ export function DropZone() {
     if (!file) return;
     setBusy(true);
     try {
-      const { report_id } = await api.scoreResumeFile(file);
+      const jd = jobDescription.trim() || undefined;
+      const { report_id } = await api.scoreResumeFile(file, jd);
+      // hand the target role to the editor, so "Fix My Resume" stays targeted
+      setCarry({ jobDescription: jd });
       router.push(`/report/${report_id}`);
     } catch (e) {
       // Show the real reason — never redirect to the demo report, which would
@@ -39,7 +45,7 @@ export function DropZone() {
     } finally {
       setBusy(false);
     }
-  }, [file, router, toast]);
+  }, [file, jobDescription, router, toast]);
 
   return (
     <div id="upload" className="w-full max-w-xl">
@@ -76,6 +82,17 @@ export function DropZone() {
           onChange={(e) => accept(e.target.files?.[0])}
         />
       </div>
+      {/* Optional, but it's what turns on real job matching: the backend needs a
+          job description to compute the semantic score and the missing-skills gap. */}
+      <div className="mt-4">
+        <Textarea
+          label="Paste the job description (optional — unlocks job matching)"
+          placeholder="Paste the posting here to see which required skills your resume is missing."
+          value={jobDescription}
+          onChange={(e) => setJobDescription(e.target.value)}
+        />
+      </div>
+
       <Button onClick={submit} loading={busy} disabled={!file} className="mt-4 w-full">
         {busy ? "Scoring…" : "Check My Resume Score →"}
       </Button>

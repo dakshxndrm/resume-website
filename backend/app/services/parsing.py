@@ -109,6 +109,13 @@ def _pretty_skill(s: str) -> str:
         "rest apis": "REST APIs", "ci/cd": "CI/CD", "html": "HTML", "css": "CSS",
         "sql": "SQL", "aws": "AWS", "gcp": "GCP", "nlp": "NLP", "mlops": "MLOps",
         "tailwind css": "Tailwind CSS", "r": "R",
+        # .title() mangles these — they appear verbatim in job descriptions
+        "javascript": "JavaScript", "typescript": "TypeScript", "php": "PHP",
+        "fastapi": "FastAPI", "graphql": "GraphQL", "numpy": "NumPy",
+        "scikit-learn": "scikit-learn", "pytorch": "PyTorch",
+        "tensorflow": "TensorFlow", "opencv": "OpenCV",
+        "postgresql": "PostgreSQL", "mysql": "MySQL", "mongodb": "MongoDB",
+        "sqlite": "SQLite",
     }
     return special.get(s, s.title())
 

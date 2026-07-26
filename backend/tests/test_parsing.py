@@ -39,7 +39,7 @@ def test_extract_skills_multiword_and_punctuated():
 def test_extract_skills_no_substring_false_positives():
     """Whole-word matching: 'java' must not fall out of 'JavaScript', etc."""
     found = extract_skills("JavaScript, Rustic charm, Django, Goal setting, Ruby")
-    assert "Javascript" in found
+    assert "JavaScript" in found
     assert "Java" not in found      # substring of JavaScript
     assert "Rust" not in found      # substring of Rustic
     assert "Go" not in found        # substring of Goal / Django

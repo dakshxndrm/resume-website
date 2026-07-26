@@ -8,33 +8,49 @@ import { Badge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { useWizardState } from "../hooks/useWizardState";
 import { steps } from "../steps.config";
-import { roleSkillSuggestions } from "@/lib/mock";
-import { api } from "@/lib/api";
-import { useState } from "react";
+import { ApiError, api } from "@/lib/api";
+import { setCarry } from "@/lib/carry";
+import { useEffect, useState } from "react";
 
 export function BuilderWizard() {
   const { resume, patch, step, setStep, clear, hydrated } = useWizardState();
   const [busy, setBusy] = useState(false);
+  const [suggested, setSuggested] = useState<string[]>([]);
   const toast = useToast();
   const router = useRouter();
+
+  // Role-based skill suggestions come from the backend (/skills/suggest). On failure
+  // we show none — offering a hardcoded list would be inventing data.
+  const role = resume.basics.label.trim();
+  useEffect(() => {
+    if (!role) {
+      setSuggested([]);
+      return;
+    }
+    let cancelled = false;
+    api.suggestSkills(role)
+      .then((r) => { if (!cancelled) setSuggested(r.skills); })
+      .catch(() => { if (!cancelled) setSuggested([]); });
+    return () => { cancelled = true; };
+  }, [role]);
+
   if (!hydrated) return null;
 
   const current = steps[step];
   const next = () => setStep(Math.min(step + 1, steps.length - 1));
   const back = () => setStep(Math.max(step - 1, 0));
 
-  const suggested =
-    roleSkillSuggestions[resume.basics.label.toLowerCase()] ?? roleSkillSuggestions.default;
-
   const finish = async () => {
     setBusy(true);
     try {
       const report = await api.scoreResume(resume);
+      // Hand the resume to the editor so "Fix My Resume" on the report keeps it.
+      setCarry({ resume });
       clear();
       router.push(`/report/${report.id}`);
-    } catch {
-      clear();
-      router.push("/report/demo"); // backend not wired yet
+    } catch (e) {
+      // Never clear the wizard or fake a report on failure — the work stays put.
+      toast("error", e instanceof ApiError ? e.message : "Could not score your resume. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -110,7 +126,11 @@ export function BuilderWizard() {
             {current.key === "skills" && (
               <div>
                 <p className="mb-3 text-sm text-neutral">
-                  Suggested for <strong className="text-secondary">{resume.basics.label || "your role"}</strong> — tap to add:
+                  {suggested.length > 0 ? (
+                    <>Suggested for <strong className="text-secondary">{resume.basics.label || "your role"}</strong> — tap to add:</>
+                  ) : (
+                    <>Type your own skills below{role ? " — no suggestions available for this role right now" : ""}.</>
+                  )}
                 </p>
                 <div className="mb-5 flex flex-wrap gap-2">
                   {suggested.filter((s) => !resume.skills.includes(s)).map((s) => (

@@ -2,7 +2,7 @@ import json
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.schemas import ResumeIn, ScoreRequest
@@ -12,6 +12,7 @@ from app.core.db import get_db
 from app.models.models import ResumeRecord, ScoreReportRecord, User
 from app.services.llm_router import generate_suggestions, ping
 from app.services.parsing import parse_resume
+from app.services.pdf_export import build_resume_pdf, is_empty_resume, safe_filename
 from app.services.scoring import score_resume
 
 router = APIRouter()
@@ -132,6 +133,25 @@ def get_report(report_id: str, db: Session = Depends(get_db)):
     if not rec:
         raise HTTPException(404, "Report not found")
     return rec.payload
+
+
+# ---------- export ----------
+# Deliberately unauthenticated: editing works logged-out, so exporting must too.
+# Nothing is read from or written to the database here — the resume is in the body.
+@router.post("/resumes/export")
+def export_resume(body: ResumeIn):
+    """Render a structured resume to an ATS-friendly, single-column, real-text PDF."""
+    resume = body.model_dump(exclude={"id"})
+    if is_empty_resume(resume):
+        raise HTTPException(422, "Nothing to export yet — add your name or a section first.")
+
+    pdf = build_resume_pdf(resume)
+    filename = safe_filename(str((resume.get("basics") or {}).get("name") or "resume"))
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------- resumes (auth required) ----------

@@ -1,0 +1,5 @@
+# Raw downloaded datasets — never commit these (large, often licence-restricted).
+raw/
+*.csv
+*.jsonl
+*.zip

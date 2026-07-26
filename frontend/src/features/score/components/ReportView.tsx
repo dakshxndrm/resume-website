@@ -83,7 +83,8 @@ export function ReportView({ id }: { id: string }) {
         </Container>
       </Section>
 
-      {/* Sticky primary action */}
+      {/* Sticky primary action — the editor picks up the resume + job description
+          stashed in sessionStorage by whichever screen produced this report. */}
       <div className="sticky bottom-0 border-t border-neutral/10 bg-white/90 py-4 backdrop-blur">
         <Container className="flex justify-center">
           <Link href="/editor/new"><Button>Fix My Resume →</Button></Link>

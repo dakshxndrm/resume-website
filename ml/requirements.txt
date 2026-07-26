@@ -1,0 +1,21 @@
+# ml/ track only. Separate venv from backend/ — do not install these into the API env.
+#
+# Windows / CPU-only install:
+#   python -m venv ml\venv
+#   ml\venv\Scripts\activate
+#   pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r ml/requirements.txt
+# (install torch from the CPU index FIRST, otherwise pip pulls the ~2.5GB CUDA build)
+#
+# Colab / Kaggle: torch + numpy are preinstalled with working CUDA. Do NOT reinstall
+# torch there — it will downgrade the GPU build. Just:
+#   pip install sentence-transformers==3.1.1 datasets==2.21.0
+
+torch==2.4.1
+sentence-transformers==3.1.1
+datasets==2.21.0
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.5.2
+tqdm==4.66.5
+scipy==1.14.1  # spearmanr, pulled in by sklearn anyway — pinned so eval.py is reproducible

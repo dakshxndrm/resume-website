@@ -1,0 +1,21 @@
+# virtualenvs
+venv/
+.venv/
+env/
+
+# downloaded / generated datasets (sample.jsonl is checked in on purpose)
+data/raw/
+data/*.jsonl
+!data/sample.jsonl
+
+# checkpoints
+checkpoints/
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+
+# caches
+__pycache__/
+*.pyc
+.cache/
