@@ -8,6 +8,16 @@ class ScoreRequest(BaseModel):
     job_description: str | None = None
 
 
+class ConsentIn(BaseModel):
+    """Opt-in for using this user's resume data to train the scoring model.
+
+    No default: the client must say true or false explicitly. A default of False
+    would be harmless, but a default of True would be a dark pattern waiting to
+    happen, and "no default" makes the intent unmistakable at the call site.
+    """
+    training_consent: bool
+
+
 class ResumeIn(BaseModel):
     basics: dict[str, Any]
     work: list[dict[str, Any]] = []

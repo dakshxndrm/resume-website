@@ -1,0 +1,16 @@
+# Downloaded corpora are never committed — licences vary and some forbid
+# redistribution. Every file here is fetched manually per external/README.md.
+external/data/
+*.xlsx
+*.xls
+*.csv
+*.json
+*.jsonl
+*.zip
+*.tar.gz
+*.pdf
+*.docx
+
+# Benchmark output
+results/
+*.out

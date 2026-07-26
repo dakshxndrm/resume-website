@@ -13,5 +13,12 @@ PyMuPDF==1.24.9
 python-docx==1.1.2
 # imported by app/services/scoring.py (BM25 semantic score) — was missing too
 rank-bm25==0.2.2
+# Sentence-BERT half of the semantic score (all-MiniLM-L6-v2, same model as ml/baseline.py).
+# Install torch from the CPU index FIRST or pip pulls the ~2.5GB CUDA build:
+#   pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cpu
+# Model weights (~90MB) download on first run; app/main.py warms them at startup.
+# Optional at runtime — scoring falls back to BM25 + coverage if this is missing.
+torch==2.4.1
+sentence-transformers==3.1.1
 # PDF export (app/services/pdf_export.py). Pure-Python wheels — no GTK needed on Windows.
 reportlab==4.2.2

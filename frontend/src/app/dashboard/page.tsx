@@ -7,11 +7,12 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useAuth } from "@/lib/auth-context";
+import { PrivacyControls } from "@/features/account/components/PrivacyControls";
 import { api } from "@/lib/api";
 import type { Resume } from "@/types/resume";
 
 export default function DashboardPage() {
-  const { user, loading } = useAuth();
+  const { user, loading, logout } = useAuth();
   const router = useRouter();
   const [resumes, setResumes] = useState<Resume[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +66,14 @@ export default function DashboardPage() {
             ))}
           </div>
         )}
+
+        {/* Consent + deletion live on the signed-in home page, not buried in settings. */}
+        <PrivacyControls
+          onDeleted={async () => {
+            await logout(); // the account row is gone; the session must go with it
+            router.replace("/");
+          }}
+        />
       </Container>
     </Section>
   );

@@ -1,3 +1,6 @@
+import pytest
+
+from app.services import scoring
 from app.services.scoring import WEIGHTS, score_resume
 
 SEVERITIES = {"high", "medium", "low"}
@@ -124,3 +127,122 @@ def test_relevant_resume_beats_unrelated_resume_on_same_jd():
 
     assert semantic(relevant) > semantic(unrelated)
     assert relevant["total"] > unrelated["total"]
+
+
+# ---------------------------------------------------------------- SBERT semantic
+def _semantic_of(resume_text, jd):
+    return scoring._semantic_score(resume_text, jd)
+
+
+# Same job, described in words the JD never uses. The lexical signals score this
+# near zero; SBERT is the reason it should not.
+PARAPHRASED_RESUME = (
+    "Server-side developer. I design and ship HTTP web services using Django and "
+    "Flask, store data in relational databases, containerise everything and run it "
+    "on cloud infrastructure with automated build pipelines."
+)
+UNRELATED_RESUME = (
+    "Barista and latte artist. Managed cafe inventory, trained staff on espresso "
+    "machines and handled customer complaints during peak hours."
+)
+
+
+@pytest.fixture
+def fresh_model_cache():
+    """_sbert() memoises with lru_cache — clear it around any test that changes
+    whether the model is available, or the previous test's answer leaks in."""
+    scoring._sbert.cache_clear()
+    yield
+    # a test may have monkeypatched _sbert outright, in which case there is no cache
+    getattr(scoring._sbert, "cache_clear", lambda: None)()
+
+
+@pytest.fixture
+def sbert_required(fresh_model_cache):
+    if not scoring.warm_semantic_model():
+        pytest.skip("SBERT unavailable (not installed, or SBERT_DISABLED set)")
+
+
+def test_sbert_separates_paraphrased_match_from_unrelated(sbert_required):
+    """The whole point of adding SBERT: a semantic match with no shared vocabulary
+    must beat an unrelated resume by a wide margin, not a rounding error."""
+    match = _semantic_of(PARAPHRASED_RESUME, BACKEND_JD)
+    unrelated = _semantic_of(UNRELATED_RESUME, BACKEND_JD)
+
+    assert match > unrelated + 10, (match, unrelated)
+
+
+def test_sbert_ranks_exact_match_above_paraphrase_above_unrelated(sbert_required):
+    exact = _semantic_of(
+        "Backend engineer building REST APIs in Python with FastAPI and PostgreSQL, "
+        "deployed with Docker on AWS.", BACKEND_JD)
+    paraphrase = _semantic_of(PARAPHRASED_RESUME, BACKEND_JD)
+    unrelated = _semantic_of(UNRELATED_RESUME, BACKEND_JD)
+
+    assert exact > paraphrase > unrelated, (exact, paraphrase, unrelated)
+
+
+def test_sbert_disabled_falls_back_to_lexical(monkeypatch, fresh_model_cache):
+    """SBERT_DISABLED=1 must reproduce the pre-SBERT score exactly, not a
+    deflated one — the lexical half is renormalised, not left at 55%."""
+    monkeypatch.setenv("SBERT_DISABLED", "1")
+    assert scoring._sbert() is None
+
+    resume = PARAPHRASED_RESUME
+    coverage_and_bm25 = scoring._semantic_score(resume, BACKEND_JD)
+
+    # recompute the old formula by hand and require an exact match
+    jd_tokens = scoring._tokens(BACKEND_JD)
+    resume_tokens = scoring._tokens(resume)
+    jd_set = set(jd_tokens)
+    coverage = len(jd_set & set(resume_tokens)) / len(jd_set)
+    from rank_bm25 import BM25Okapi
+    raw = BM25Okapi([resume_tokens]).get_scores(jd_tokens)[0]
+    expected = round(min(100, (0.6 * coverage + 0.4 * min(1.0, raw / len(jd_tokens))) * 100))
+
+    assert coverage_and_bm25 == expected
+
+
+def test_missing_package_falls_back_and_warns(monkeypatch, fresh_model_cache, caplog):
+    """Simulate sentence-transformers not being installed at all."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_sentence_transformers(name, *args, **kwargs):
+        if name.startswith("sentence_transformers"):
+            raise ImportError("No module named 'sentence_transformers'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delenv("SBERT_DISABLED", raising=False)
+    monkeypatch.setattr(builtins, "__import__", no_sentence_transformers)
+
+    assert scoring._sbert() is None
+    assert scoring.warm_semantic_model() is False
+    assert "falling back" in caplog.text.lower()
+
+    # and a real score request still works
+    r = score_resume({"skills": ["Python"], "work": [{}], "education": [],
+                      "projects": [], "raw_text": PARAPHRASED_RESUME, "word_count": 30},
+                     BACKEND_JD)
+    assert 0 <= next(c["score"] for c in r["categories"] if c["key"] == "semantic") <= 100
+
+
+def test_broken_encode_never_crashes_a_score_request(monkeypatch, fresh_model_cache):
+    """Model loads but encoding blows up mid-request — must degrade, not 500."""
+    class ExplodingModel:
+        def encode(self, *_a, **_kw):
+            raise RuntimeError("CUDA out of memory")
+
+    monkeypatch.setattr(scoring, "_sbert", lambda: ExplodingModel())
+
+    assert scoring._sbert_similarity(PARAPHRASED_RESUME, BACKEND_JD) is None
+    r = score_resume({"skills": [], "work": [], "education": [], "projects": [],
+                      "raw_text": PARAPHRASED_RESUME, "word_count": 30}, BACKEND_JD)
+    assert 0 <= r["total"] <= 100
+
+
+def test_no_job_description_stays_neutral_regardless_of_sbert(fresh_model_cache):
+    """The neutral-60 shortcut must run before any model is touched."""
+    assert scoring._semantic_score("Backend engineer with FastAPI", None) == 60
+    assert scoring._semantic_score("", BACKEND_JD) == 60

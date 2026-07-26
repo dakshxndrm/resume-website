@@ -1,21 +1,34 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.api.schemas import ResumeIn, ScoreRequest
+from app.api.schemas import ConsentIn, ResumeIn, ScoreRequest
 from app.core.auth import get_current_user, get_optional_user
 from app.core.config import settings
 from app.core.db import get_db
-from app.models.models import ResumeRecord, ScoreReportRecord, User
+from app.models.models import ResumeRecord, ScoreReportRecord, TrainingExample, User
 from app.services.llm_router import generate_suggestions, ping
 from app.services.parsing import parse_resume
 from app.services.pdf_export import build_resume_pdf, is_empty_resume, safe_filename
+from app.services.privacy import anonymize_resume
 from app.services.scoring import score_resume
 
 router = APIRouter()
+
+
+def _now_iso() -> str:
+    """UTC timestamp, same naive-ISO shape the API has always returned.
+
+    datetime.utcnow() is deprecated; now(timezone.utc) is the replacement but adds
+    a '+00:00' suffix. Dropping the tzinfo keeps the wire format byte-identical for
+    existing clients. ponytail: emit real offset-aware ISO when the frontend is
+    ready to parse it.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
 # ---------- LLM suggestion swap ----------
@@ -30,6 +43,37 @@ def _apply_llm_suggestions(result: dict, resume_text: str, job_description: str 
     if ai:
         return {**result, "suggestions": ai, "suggestionsSource": "ai"}
     return {**result, "suggestionsSource": "rules"}
+
+
+def _log_training_example(db: Session, user: User | None, report_id: str,
+                          resume: dict, result: dict) -> bool:
+    """Store a consented (anonymised resume, teacher output) pair for Phase 4 JEPA.
+
+    The single gate for the whole training dataset: no user row, or
+    training_consent False, means nothing is written. Consent is checked here and
+    nowhere else, so there is exactly one place to audit.
+
+    Best-effort like the report save — a failure here must never cost the user
+    their score. Returns whether a row was written (used by tests).
+    """
+    if user is None or not user.training_consent:
+        return False
+    try:
+        db.add(TrainingExample(
+            report_id=report_id,
+            anonymized_resume=anonymize_resume(resume, known=[user.name or "", user.email or ""]),
+            teacher_output={"total": result["total"],
+                            "categories": result["categories"],
+                            "suggestions": result["suggestions"],
+                            "source": result.get("suggestionsSource")},
+        ))
+        db.commit()
+        return True
+    except Exception as exc:
+        db.rollback()
+        print(f"WARNING: could not log training example for {report_id}: "
+              f"{type(exc).__name__}: {exc}")
+        return False
 
 
 def _job_title(job_description: str | None) -> str | None:
@@ -65,6 +109,71 @@ def _require_user(claims: dict, db: Session) -> User:
     return user
 
 
+# ---------- account, consent and deletion (Phase 0) ----------
+@router.get("/users/me")
+def get_me(claims: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Account state, including the current consent value.
+
+    The consent checkbox has to render the *stored* answer. Without this it would
+    render unchecked every time, which would quietly misrepresent a user who had
+    already opted in.
+    """
+    user = _require_user(claims, db)
+    return {"id": user.id, "email": user.email, "name": user.name,
+            "trainingConsent": user.training_consent}
+
+
+@router.patch("/users/consent")
+def set_consent(body: ConsentIn, claims: dict = Depends(get_current_user),
+                db: Session = Depends(get_db)):
+    """Turn training consent on or off. Symmetric on purpose — withdrawing is one
+    call, exactly like granting. Nothing else about the product changes either way."""
+    user = _require_user(claims, db)
+    user.training_consent = body.training_consent
+    db.commit()
+    return {"trainingConsent": user.training_consent}
+
+
+@router.delete("/users/me")
+def delete_me(claims: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Erase everything belonging to this user, children before parents.
+
+    Order matters — training_examples -> score_reports -> resumes -> user — because
+    each step's rows point at the next one's. Reports are matched by user_id *and*
+    by resume, so a report attached only to a resume is not left orphaned.
+
+    One transaction: a partial delete would be worse than none, because the user
+    would be told their data is gone when some of it is not.
+    """
+    user = _require_user(claims, db)
+
+    resume_ids = [r.id for r in db.query(ResumeRecord).filter_by(user_id=user.id).all()]
+    owned = [ScoreReportRecord.user_id == user.id]
+    if resume_ids:
+        owned.append(ScoreReportRecord.resume_id.in_(resume_ids))
+    reports = db.query(ScoreReportRecord).filter(or_(*owned)).all()
+    report_ids = [r.id for r in reports]
+
+    deleted = {"trainingExamples": 0, "scoreReports": len(report_ids),
+               "resumes": len(resume_ids)}
+    try:
+        if report_ids:
+            deleted["trainingExamples"] = db.query(TrainingExample).filter(
+                TrainingExample.report_id.in_(report_ids)
+            ).delete(synchronize_session=False)
+        for report in reports:
+            db.delete(report)
+        for resume in db.query(ResumeRecord).filter_by(user_id=user.id).all():
+            db.delete(resume)
+        db.delete(user)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(500, f"Could not delete your data: {type(exc).__name__}") from exc
+
+    return {"deleted": deleted}
+
+
 # ---------- scoring ----------
 @router.post("/score")
 def score(req: ScoreRequest, claims: dict | None = Depends(get_optional_user), db: Session = Depends(get_db)):
@@ -73,7 +182,7 @@ def score(req: ScoreRequest, claims: dict | None = Depends(get_optional_user), d
     result = _apply_llm_suggestions(result, _resume_to_text(req.resume), req.job_description)
     report_id = str(uuid.uuid4())
     payload = {**result, "id": report_id, "jobTitle": _job_title(req.job_description),
-               "createdAt": datetime.utcnow().isoformat()}
+               "createdAt": _now_iso()}
 
     if claims:
         user = db.query(User).filter_by(firebase_uid=claims["uid"]).first()
@@ -84,6 +193,8 @@ def score(req: ScoreRequest, claims: dict | None = Depends(get_optional_user), d
             payload=payload, scorer=result["suggestionsSource"],
         ))
         db.commit()
+        # only with explicit opt-in; see _log_training_example
+        _log_training_example(db, user, report_id, req.resume, payload)
     return payload
 
 
@@ -109,12 +220,17 @@ async def score_upload(
     result = _apply_llm_suggestions(result, parsed["raw_text"], job_description)
     report_id = str(uuid.uuid4())
     payload = {**result, "id": report_id, "jobTitle": _job_title(job_description),
-               "createdAt": datetime.utcnow().isoformat()}
+               "createdAt": _now_iso()}
+
+    # Attach the report to the signed-in user when there is one, so "delete my data"
+    # can actually find it later. Anonymous uploads stay unattached, as before.
+    user = db.query(User).filter_by(firebase_uid=claims["uid"]).first() if claims else None
 
     # Persistence is best-effort: a DB hiccup must not throw away a finished report.
     try:
         db.add(ScoreReportRecord(
-            id=report_id, job_title=_job_title(job_description),
+            id=report_id, user_id=user.id if user else None,
+            job_title=_job_title(job_description),
             job_description=job_description, total=result["total"],
             payload=payload, scorer=result["suggestionsSource"],
         ))
@@ -122,6 +238,9 @@ async def score_upload(
     except Exception as exc:
         db.rollback()
         print(f"WARNING: could not save report {report_id}: {type(exc).__name__}: {exc}")
+    else:
+        # only with explicit opt-in; see _log_training_example
+        _log_training_example(db, user, report_id, parsed, payload)
 
     # report_id kept alongside the full report so existing callers keep working.
     return {**payload, "report_id": report_id}

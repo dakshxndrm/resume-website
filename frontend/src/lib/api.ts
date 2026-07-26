@@ -75,7 +75,37 @@ export const api = {
   syncUser() {
     return request<{ id: string }>("/auth/sync", { method: "POST" });
   },
+
+  /* ---- Account, consent and deletion (Phase 0) ---- */
+  /** Account row including the stored consent value — the checkbox renders from this. */
+  getMe() {
+    return request<Account>("/users/me");
+  },
+  /** Opt in or out of using this resume data to train the scoring model. */
+  setTrainingConsent(trainingConsent: boolean) {
+    return request<{ trainingConsent: boolean }>("/users/consent", {
+      method: "PATCH",
+      body: JSON.stringify({ training_consent: trainingConsent }),
+    });
+  },
+  /** Permanently erase resumes, reports, training examples and the account row. */
+  deleteAccount() {
+    return request<{ deleted: DeletionSummary }>("/users/me", { method: "DELETE" });
+  },
 };
+
+export interface Account {
+  id: string;
+  email: string;
+  name: string | null;
+  trainingConsent: boolean;
+}
+
+export interface DeletionSummary {
+  trainingExamples: number;
+  scoreReports: number;
+  resumes: number;
+}
 
 /** Like request(), but the response is a file. Errors still arrive as JSON. */
 async function requestBlob(path: string, body: unknown): Promise<Blob> {

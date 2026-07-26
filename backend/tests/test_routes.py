@@ -97,6 +97,22 @@ def test_unknown_report_is_404(client):
     assert r.json()["detail"] == "Report not found"
 
 
+# ---------------------------------------------------------------- startup
+def test_startup_survives_a_broken_sbert_model(db_session, monkeypatch):
+    """The lifespan warm-up must never take the app down. If the model explodes,
+    the process still boots and scoring degrades to BM25."""
+    import app.main as main
+
+    monkeypatch.setattr(main, "warm_semantic_model",
+                        lambda: (_ for _ in ()).throw(RuntimeError("weights corrupt")))
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        with TestClient(app) as c:          # context manager = lifespan actually runs
+            assert c.get("/llm/health").status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+
 # ---------------------------------------------------------------- misc
 def test_llm_health_disabled_without_key(client):
     r = client.get("/llm/health")
