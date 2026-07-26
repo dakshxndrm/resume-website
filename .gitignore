@@ -1,0 +1,14 @@
+# Stale nested clone of this same repo — kept on disk, never tracked.
+resume-website/
+
+# Secrets (backend/.gitignore covers backend/, this is the safety net)
+.env
+env
+*.env
+!*.env.example
+firebase-service-account.json
+
+__pycache__/
+*.pyc
+.venv/
+node_modules/

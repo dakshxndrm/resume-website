@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.db import get_db
 from app.models.models import ResumeRecord, ScoreReportRecord, User
 from app.services.llm_router import generate_suggestions, ping
+from app.services.parsing import parse_resume
 from app.services.scoring import score_resume
 
 router = APIRouter()
@@ -28,6 +29,14 @@ def _apply_llm_suggestions(result: dict, resume_text: str, job_description: str 
     if ai:
         return {**result, "suggestions": ai, "suggestionsSource": "ai"}
     return {**result, "suggestionsSource": "rules"}
+
+
+def _job_title(job_description: str | None) -> str | None:
+    """Short display label for the report — the full JD is stored separately."""
+    first_line = (job_description or "").strip().splitlines()[0].strip() if job_description else ""
+    if not first_line:
+        return None
+    return first_line if len(first_line) <= 80 else first_line[:77] + "..."
 
 
 # ---------- auth ----------
@@ -62,14 +71,16 @@ def score(req: ScoreRequest, claims: dict | None = Depends(get_optional_user), d
     result = score_resume(req.resume, req.job_description)
     result = _apply_llm_suggestions(result, _resume_to_text(req.resume), req.job_description)
     report_id = str(uuid.uuid4())
-    payload = {**result, "id": report_id, "jobTitle": req.job_description, "createdAt": datetime.utcnow().isoformat()}
+    payload = {**result, "id": report_id, "jobTitle": _job_title(req.job_description),
+               "createdAt": datetime.utcnow().isoformat()}
 
     if claims:
         user = db.query(User).filter_by(firebase_uid=claims["uid"]).first()
         db.add(ScoreReportRecord(
             id=report_id, user_id=user.id if user else None,
+            job_title=_job_title(req.job_description),
             job_description=req.job_description, total=result["total"],
-            payload=payload, scorer="stub",
+            payload=payload, scorer=result["suggestionsSource"],
         ))
         db.commit()
     return payload
@@ -83,21 +94,36 @@ async def score_upload(
     db: Session = Depends(get_db),
 ):
     """Upload a resume file (PDF/DOCX) for parsing + scoring."""
-    try:
-        # lazy import: parsing.py needs PyMuPDF + python-docx, so a missing
-        # install breaks only this endpoint instead of the whole app
-        from app.services.parsing import parse_resume
-    except ImportError as exc:
-        raise HTTPException(503, f"File parsing unavailable - pip install PyMuPDF python-docx ({exc})")
-
     parsed = parse_resume(await file.read(), file.filename or "")
+
+    # No extracted text = we never actually read the file (scanned/image-only PDF,
+    # legacy .doc, or a corrupt upload). Say so instead of scoring an empty resume.
+    if not parsed["raw_text"].strip():
+        raise HTTPException(422, (
+            "Could not read any text from that file. If it is a scanned or image-only "
+            "PDF, or a legacy .doc, please re-save it as a text-based PDF or .docx."
+        ))
+
     result = score_resume(parsed, job_description)
     result = _apply_llm_suggestions(result, parsed["raw_text"], job_description)
     report_id = str(uuid.uuid4())
-    payload = {**result, "id": report_id, "jobTitle": job_description, "createdAt": datetime.utcnow().isoformat()}
-    db.add(ScoreReportRecord(id=report_id, job_description=job_description, total=result["total"], payload=payload, scorer="stub"))
-    db.commit()
-    return {"report_id": report_id}
+    payload = {**result, "id": report_id, "jobTitle": _job_title(job_description),
+               "createdAt": datetime.utcnow().isoformat()}
+
+    # Persistence is best-effort: a DB hiccup must not throw away a finished report.
+    try:
+        db.add(ScoreReportRecord(
+            id=report_id, job_title=_job_title(job_description),
+            job_description=job_description, total=result["total"],
+            payload=payload, scorer=result["suggestionsSource"],
+        ))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        print(f"WARNING: could not save report {report_id}: {type(exc).__name__}: {exc}")
+
+    # report_id kept alongside the full report so existing callers keep working.
+    return {**payload, "report_id": report_id}
 
 
 @router.get("/report/{report_id}")

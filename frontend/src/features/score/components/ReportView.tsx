@@ -14,12 +14,26 @@ import type { ScoreReport } from "@/types/resume";
 
 export function ReportView({ id }: { id: string }) {
   const [report, setReport] = useState<ScoreReport | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
+    // /report/demo is the deliberate sample report. Every other id is real data —
+    // never substitute the mock, or a failure looks like a genuine score.
     if (id === "demo") { setReport(mockReport); return; }
-    api.getReport(id).then(setReport).catch(() => setReport(mockReport)); // fallback until backend live
+    api.getReport(id)
+      .then(setReport)
+      .catch((e) => setError(e?.message ?? "Could not load this report."));
   }, [id]);
+
+  if (error)
+    return (
+      <Section><Container className="flex flex-col items-center gap-4 text-center">
+        <h1 className="text-2xl font-bold">We couldn&apos;t load this report</h1>
+        <p className="text-neutral">{error}</p>
+        <Link href="/"><Button>Score a resume</Button></Link>
+      </Container></Section>
+    );
 
   if (!report)
     return (

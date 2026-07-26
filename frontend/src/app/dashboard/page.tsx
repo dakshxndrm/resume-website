@@ -14,13 +14,18 @@ export default function DashboardPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
   const [resumes, setResumes] = useState<Resume[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
   }, [loading, user, router]);
 
   useEffect(() => {
-    if (user) api.listResumes().then(setResumes).catch(() => setResumes([]));
+    // Don't fall back to [] — "no resumes yet" would be a lie if the API is down.
+    if (user)
+      api.listResumes()
+        .then((rs) => { setResumes(rs); setError(null); })
+        .catch((e) => setError(e?.message ?? "Could not load your resumes."));
   }, [user]);
 
   if (loading || !user)
@@ -33,7 +38,12 @@ export default function DashboardPage() {
           <h1 className="text-3xl font-bold">Your resumes</h1>
           <Link href="/builder"><Button>New Resume</Button></Link>
         </div>
-        {resumes === null ? (
+        {error ? (
+          <Card className="flex flex-col items-center gap-4 py-16 text-center">
+            <p className="text-lg font-semibold">Couldn&apos;t load your resumes</p>
+            <p className="max-w-prose text-sm text-neutral">{error}</p>
+          </Card>
+        ) : resumes === null ? (
           <div className="grid gap-6 md:grid-cols-3">
             <Skeleton className="h-40" /><Skeleton className="h-40" /><Skeleton className="h-40" />
           </div>

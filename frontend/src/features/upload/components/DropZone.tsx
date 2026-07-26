@@ -31,8 +31,10 @@ export function DropZone() {
       const { report_id } = await api.scoreResumeFile(file);
       router.push(`/report/${report_id}`);
     } catch (e) {
-      // Backend not wired yet → demo report keeps the flow usable end-to-end.
-      if (e instanceof ApiError || e instanceof TypeError) router.push("/report/demo");
+      // Show the real reason — never redirect to the demo report, which would
+      // make a failed upload look like a successful score.
+      if (e instanceof ApiError) toast("error", e.message);
+      else if (e instanceof TypeError) toast("error", "Can't reach the server. Is the backend running?");
       else toast("error", "Something went wrong. Please try again.");
     } finally {
       setBusy(false);

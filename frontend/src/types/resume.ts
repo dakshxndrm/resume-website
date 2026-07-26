@@ -66,6 +66,8 @@ export interface ScoreReport {
   verdict: string;
   categories: CategoryScore[];
   suggestions: Suggestion[];
+  /** Whether `suggestions` came from the LLM or the rule-based fallback. */
+  suggestionsSource?: "ai" | "rules";
   missingSkills: string[];
   createdAt: string;
 }

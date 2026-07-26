@@ -34,12 +34,12 @@ export class ApiError extends Error {
 /* ---- Endpoints (backend stubs exist for each; real logic lands per PROJECT_PLAN) ---- */
 
 export const api = {
-  /** Upload resume file for parsing + scoring. Returns report id. */
+  /** Upload resume file for parsing + scoring. Returns the full report plus its id. */
   scoreResumeFile(file: File, jobDescription?: string) {
     const form = new FormData();
     form.append("file", file);
     if (jobDescription) form.append("job_description", jobDescription);
-    return requestForm<{ report_id: string }>("/score/upload", form);
+    return requestForm<ScoreReport & { report_id: string }>("/score/upload", form);
   },
   /** Score structured resume (from builder/editor) against a job title/description. */
   scoreResume(resume: Resume, jobDescription?: string) {

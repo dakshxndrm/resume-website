@@ -16,14 +16,16 @@ export function EditorView({ id }: { id: string }) {
   const timer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
-    if (id !== "new") api.getResume(id).then(setResume).catch(() => {});
-  }, [id]);
+    if (id !== "new")
+      api.getResume(id).then(setResume).catch(() => toast("error", "Could not load this resume."));
+  }, [id, toast]);
 
   // Debounced live re-score (800ms after typing stops)
   useEffect(() => {
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
-      api.scoreResume(resume).then((r) => setScore(r.total)).catch(() => setScore(72)); // mock until backend live
+      // null on failure shows "—", never a made-up score.
+      api.scoreResume(resume).then((r) => setScore(r.total)).catch(() => setScore(null));
     }, 800);
     return () => clearTimeout(timer.current);
   }, [resume]);
