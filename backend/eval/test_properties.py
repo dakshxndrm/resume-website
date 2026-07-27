@@ -6,10 +6,12 @@ for *any* sane scorer, whatever the weights are set to.
 
     cd backend && python -m pytest eval/test_properties.py -v
 
-Deliberately not under tests/ and not in pytest.ini's testpaths: this suite is
-allowed to fail. It measures the scorer's honest behaviour; the app test suite
-verifies contracts. Mixing them would create pressure to weaken a measurement to
-keep CI green.
+Collected by pytest.ini's testpaths alongside tests/. It was previously excluded
+on purpose so this suite could "be allowed to fail" without blocking CI — instead
+it silently bit-rotted (a rename in parsing.py broke the import for months and
+nobody noticed). All properties currently pass; if one needs to be allowed to
+fail again, mark it explicitly with @pytest.mark.xfail rather than dropping the
+whole file out of collection.
 """
 from __future__ import annotations
 

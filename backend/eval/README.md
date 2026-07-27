@@ -92,11 +92,13 @@ These are all necessary and none are sufficient. A scorer that returns
 `hash(text) % 100` would fail them; a scorer that returns a well-behaved,
 confident, *wrong* number can pass every one.
 
-This suite is deliberately outside `pytest.ini`'s `testpaths`, so `pytest` from
-`backend/` does not collect it. That is on purpose: **this suite is allowed to
-fail.** The app test suite verifies contracts and must stay green; this one
-measures honest behaviour. Merging them would create pressure to weaken a
-measurement to keep CI green.
+This suite is now collected by `pytest.ini`'s `testpaths`. It used to be excluded
+on the theory that it should be "allowed to fail" without pressuring anyone to
+weaken a measurement to keep CI green — but excluded also meant unwatched: a
+rename in `parsing.py` broke this file's import for months before anyone noticed.
+All properties currently pass. If a property needs to be allowed to fail again,
+mark it with `@pytest.mark.xfail(reason=...)` explicitly instead of dropping the
+whole file out of collection.
 
 ---
 

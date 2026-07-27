@@ -90,11 +90,22 @@ def test_suggestions_always_present_and_well_formed():
 
 
 # ---------------------------------------------------------------- job description
-def test_no_job_description_is_neutral():
+def test_no_job_description_with_near_empty_resume_scores_zero():
     r = score_resume(_resume(skills=["Python"], raw_text="Python engineer", word_count=2))
     semantic = next(c for c in r["categories"] if c["key"] == "semantic")
-    assert semantic["score"] == 60, "no JD means nothing to compare against — stay neutral"
+    assert semantic["score"] == 0, "too little text to judge — 0, not a neutral floor"
     assert r["missingSkills"] == []
+
+
+def test_no_job_description_with_real_resume_stays_neutral():
+    text = (
+        "Senior backend engineer with six years building REST APIs in Python and "
+        "FastAPI, backed by PostgreSQL, deployed with Docker on AWS, and maintaining "
+        "CI/CD pipelines for a team of engineers."
+    )
+    r = score_resume(_resume(skills=["Python"], raw_text=text, word_count=len(text.split())))
+    semantic = next(c for c in r["categories"] if c["key"] == "semantic")
+    assert semantic["score"] == 60, "enough text but no JD to compare against — stay neutral"
 
 
 def test_missing_skills_reflects_job_description():
@@ -243,6 +254,9 @@ def test_broken_encode_never_crashes_a_score_request(monkeypatch, fresh_model_ca
 
 
 def test_no_job_description_stays_neutral_regardless_of_sbert(fresh_model_cache):
-    """The neutral-60 shortcut must run before any model is touched."""
-    assert scoring._semantic_score("Backend engineer with FastAPI", None) == 60
-    assert scoring._semantic_score("", BACKEND_JD) == 60
+    """The neutral-60 shortcut only fires for real text; empty text is always 0,
+    even before any model is touched."""
+    assert scoring._semantic_score(
+        "Senior backend engineer with six years building REST APIs in Python and "
+        "FastAPI, backed by PostgreSQL, deployed with Docker on AWS.", None) == 60
+    assert scoring._semantic_score("", BACKEND_JD) == 0

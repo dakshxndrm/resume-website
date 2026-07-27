@@ -70,6 +70,44 @@ def _tokens(text: str) -> list[str]:
     return [t for t in raw if t not in _STOPWORDS and len(t) > 1]
 
 
+# Below this many meaningful tokens there is nothing to judge — an empty upload, a
+# name, a failed parse. Roughly one short sentence.
+_MIN_TOKENS_TO_JUDGE = 8
+
+# Type-token ratio at or above which a document reads as normal prose. Genuine
+# resumes sit around 0.45-0.70; the same paragraph pasted 20 times lands near 0.05.
+# ponytail: global TTR on purpose — a windowed measure (MATTR) cannot see
+# whole-document duplication, which is exactly the attack being blocked.
+_DIVERSE_ENOUGH = 0.30
+
+# How many times one term may count towards BM25.
+_TERM_FREQUENCY_CAP = 3
+
+
+def _cap_term_frequency(tokens: list[str], cap: int = _TERM_FREQUENCY_CAP) -> list[str]:
+    """Keep at most `cap` occurrences of each token, in order."""
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for token in tokens:
+        if seen.get(token, 0) < cap:
+            seen[token] = seen.get(token, 0) + 1
+            out.append(token)
+    return out
+
+
+def _repetition_factor(text: str) -> float:
+    """1.0 for normal writing, falling towards 0 as a document repeats itself.
+
+    Scales the two components keyword stuffing games — skills coverage and the
+    semantic match. Short documents are exempt: a 30-word resume has a low
+    type-token ratio for honest reasons, and it is already penalised on length.
+    """
+    tokens = _tokens(text)
+    if len(tokens) < 60:
+        return 1.0
+    return min(1.0, (len(set(tokens)) / len(tokens)) / _DIVERSE_ENOUGH)
+
+
 def _skills_in(text: str) -> set[str]:
     low = (text or "").lower()
     out: set[str] = set()
@@ -165,21 +203,30 @@ def _semantic_score(resume_text: str, job_description: str | None) -> int:
 
     If SBERT is unavailable the lexical half is renormalised back to 100% — i.e.
     exactly the pre-SBERT behaviour, not a silently deflated score.
+
+    An empty or near-empty resume scores 0, never the neutral 60. Nothing to read is
+    a non-match, not an unknown one — the old neutral floated an empty upload to 36
+    overall, above a resume of pure gibberish.
     """
-    if not job_description or not resume_text.strip():
+    resume_tokens = _tokens(resume_text)
+    if len(resume_tokens) < _MIN_TOKENS_TO_JUDGE:
+        return 0
+    if not job_description:
         return 60
 
     jd_tokens = _tokens(job_description)
-    resume_tokens = _tokens(resume_text)
-    if not jd_tokens or not resume_tokens:
+    if not jd_tokens:
         return 60
 
-    # keyword coverage: what share of JD words appear in the resume
+    # keyword coverage: what share of JD *distinct* words appear in the resume.
+    # Set-based on both sides, so saying "Kubernetes" 20 times counts exactly once.
     jd_set = set(jd_tokens)
     coverage = len(jd_set & set(resume_tokens)) / len(jd_set)
 
-    # BM25 relevance of the resume (as the single doc) to the JD query
-    bm25 = BM25Okapi([resume_tokens])
+    # BM25 relevance of the resume (as the single doc) to the JD query. Term
+    # frequencies are capped first: without the cap, pasting the posting back 20
+    # times is a perfect self-match and scores like an ideal candidate.
+    bm25 = BM25Okapi([_cap_term_frequency(resume_tokens)])
     raw = bm25.get_scores(jd_tokens)[0]
     # normalise: BM25 grows with matched-query length; divide by query length
     bm25_norm = min(1.0, raw / max(1, len(jd_tokens)))
@@ -188,7 +235,28 @@ def _semantic_score(resume_text: str, job_description: str | None) -> int:
     semantic = _sbert_similarity(resume_text, job_description)
 
     blended = lexical if semantic is None else 0.55 * lexical + 0.45 * semantic
-    return int(round(min(100, blended * 100)))
+    return int(round(min(100, blended * 100 * _repetition_factor(resume_text))))
+
+
+def _skills_score(skills: list, resume_text: str, job_description: str | None) -> int:
+    """Coverage of the JD's required skills — not a count of the resume's skills.
+
+    `25 + len(skills) * 8` rewarded ten irrelevant skills with a perfect 100, which
+    is how a barista scored full marks on a Python posting. With a JD present the
+    only question that matters is *what fraction of what the job asks for is here*.
+
+    No JD (or a JD naming no known skill) → the old count-based score, because with
+    nothing to cover against, "how much do you know" is the only available signal.
+    """
+    jd_skills = _skills_in(job_description) if job_description else set()
+    if not jd_skills:
+        return min(100, 25 + len(skills) * 8)
+
+    have = {str(s).lower() for s in skills} | _skills_in(resume_text)
+    coverage = len(jd_skills & have) / len(jd_skills)
+    # A resume that is the posting pasted back at you covers 100% of it. Discount by
+    # how much of the document is genuinely distinct writing.
+    return round(100 * coverage * _repetition_factor(resume_text))
 
 
 def _missing_skills(resume_text: str, job_description: str | None) -> list[str]:
@@ -220,8 +288,8 @@ def score_resume(resume: dict[str, Any], job_description: str | None = None) -> 
         formatting = 85
 
     cat_scores = {
-        "skills": min(100, 25 + len(skills) * 8),
-        "experience": min(100, 30 + len(work) * 22),
+        "skills": _skills_score(skills, raw_text, job_description),
+        "experience": min(100, 22 + len(work) * 22),
         "semantic": semantic,
         "projects": min(100, 25 + len(projects) * 25),
         "education": min(100, 40 + len(education) * 30),

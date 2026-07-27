@@ -18,8 +18,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.parsing import _count_entries, extract_skills  # noqa: E402
-from app.services.parsing import _DEGREE_WORDS, _EDU_HEADINGS, _EXP_HEADINGS, _PROJ_HEADINGS  # noqa: E402
+from app.services.parsing import _DEGREE_RE, _count_section_entries, extract_skills, split_sections  # noqa: E402
 from app.services.scoring import score_resume  # noqa: E402
 
 DEFAULT_DATASET = Path(__file__).resolve().parent / "golden" / "dataset.jsonl"
@@ -41,13 +40,16 @@ def resume_dict(text: str) -> dict:
     function takes file bytes and there is no text entry point.
     ponytail: delete this in favour of parse_resume the day it accepts text.
     """
+    sections = split_sections(text)
+    edu_section = sections.get("education")
+    edu_count = (len(_DEGREE_RE.findall(edu_section)) if edu_section else 0) or \
+        _count_section_entries(edu_section)
     return {
         "raw_text": text,
         "skills": extract_skills(text),
-        "work": [{"i": i} for i in range(_count_entries(text, _EXP_HEADINGS))],
-        "education": [{"i": i} for i in range(
-            _count_entries(text, _EDU_HEADINGS, item_words=_DEGREE_WORDS))],
-        "projects": [{"i": i} for i in range(_count_entries(text, _PROJ_HEADINGS))],
+        "work": [{"i": i} for i in range(_count_section_entries(sections.get("experience")))],
+        "education": [{"i": i} for i in range(edu_count)],
+        "projects": [{"i": i} for i in range(_count_section_entries(sections.get("projects")))],
         "word_count": len(text.split()),
     }
 
