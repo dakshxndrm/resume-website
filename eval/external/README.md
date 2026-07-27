@@ -144,13 +144,92 @@ category breakdown for every failure so each one traces to a component.
 
 ---
 
+## Measured result — stress_intervals.py, 2026-07-27
+
+SBERT active (`all-MiniLM-L6-v2`). **13/25 passed, 12 failed. All 12 failures are
+ABOVE the interval — the scorer is uniformly too generous, never too harsh.**
+
+Two of the three spec-mandated cases fail:
+
+| Spec case | Requirement | Got | |
+|---|---|---|---|
+| 1 near-perfect match | > 70 | **89** | PASS |
+| 3 unrelated industry (barista → backend) | < 30 | **55** | **FAIL** |
+| 4 job description pasted 20× | ≤ 50 | **66** | **FAIL** |
+
+Score range across all 25 cases: 24 .. 89.
+
+### Root cause 1 — 45% of the weight is one signal counted three times
+
+`parsing._count_entries` (`backend/app/services/parsing.py:123`) counts **date-range
+regex hits across the entire document**, and `parse_resume` calls it separately for
+work, education and projects. When any date range exists, all three sections return
+the *same count*. The barista resume has three date ranges, so:
+
+```
+work=3  education=3  projects=3   ->   experience 96  education 100  projects 100
+```
+
+Experience + projects + education are 45% of the total weight and, in practice, are
+a single measurement of "how many years appear in this document" — triple-counted,
+and entirely blind to what the resume says. That is why a barista scores 96 on
+Experience against a senior Python posting.
+
+### Root cause 2 — only 20% of the score can respond to the job
+
+Skills, experience, projects, education and formatting are all computed without ever
+seeing the job description. Only `semantic` (20%) reads it. The maximum swing a job
+description can produce is therefore **20 points**, and the count-based categories
+saturate at 100 after three entries. Cases 12, 13 and 23 show the consequence:
+
+| Case | semantic | total |
+|---|---|---|
+| 12 data scientist vs frontend posting | 1 | 77 |
+| 13 frontend resume vs backend posting | 23 | 82 |
+| 23 nurse vs backend posting | 1 | 52 |
+
+The semantic component correctly identified all three as mismatches — it scored 1,
+23 and 1 out of 100. It was outvoted. **"Under 30 for an unrelated industry" is
+arithmetically unreachable** for any resume that parses at all: with semantic at 0,
+the category floors (skills 25, experience 30, projects 25, education 40, formatting
+50) still sum to 24, and a single date range lifts experience/education/projects to
+near 100.
+
+### Root cause 3 — an empty resume scores 36, not 0
+
+`_semantic_score` returns the neutral **60** when the resume text is empty
+(`scoring.py`, `if not job_description or not resume_text.strip()`). An empty upload
+is not an unknown match, it is a non-match, but it is credited as average. Combined
+with the floors, the empty resume scores 36 (case 5, FAIL) while the *name-only* and
+*gibberish* resumes score 24 and PASS — text that parses to nothing scores lower than
+no text at all.
+
+### Root cause 4 — nothing penalises repetition
+
+Case 4 (the posting pasted 20 times) gets skills=100 and semantic=64: it is a perfect
+lexical self-match by construction, and no signal notices that the document is the
+same 90 words repeated. Formatting only tests word count, and >1200 words costs 15
+points off one 5%-weighted category.
+
+### What this does NOT prove
+
+The intervals are 25 cases I wrote. They are a specification of intended behaviour,
+not a measured ground truth — a FAIL means the scorer disagrees with a stated
+intention, not that a real recruiter would disagree. Cases 8–21 in particular encode
+opinions about what a career changer or a contractor *should* score. The three
+spec-mandated cases are the ones worth defending; the rest are directional.
+
+Fixes belong in `app/services/`, which this directory does not touch.
+
+---
+
 ## Honest summary of coverage
 
 | Capability | Covered by | Strength |
 |---|---|---|
 | Parsing / skill extraction | Resume-Corpus NER | **Strong** — hand-marked ground truth |
 | Quality ranking | CareerCorpus | **Moderate** — real expert labels, low ceiling, narrow range |
-| Job matching | stress_intervals only | **Weak** — 25 cases I wrote myself |
+| Job matching | stress_intervals only | **Weak** — 25 cases I wrote myself; 12 currently FAIL |
 | Distribution sanity | CareerCorpus + Kaggle | Moderate |
 
 The weakest cell is the one the product sells. No public dataset in this list pairs

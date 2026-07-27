@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 
 import requests
@@ -32,6 +33,40 @@ _SYSTEM_PROMPT = (
     "You are an expert technical resume reviewer. "
     "You reply with valid json only - no markdown fences, no commentary."
 )
+
+
+# Groq's own 429 means the shared free-tier quota is spent. Hammering it after
+# that wastes a round trip per request and can extend the block, so one 429 puts
+# the whole process into a short cooldown during which we do not call out at all
+# and every caller transparently gets rule-based suggestions.
+_DEFAULT_COOLDOWN_SECONDS = 60
+_cooldown_until = 0.0
+
+
+def is_cooling_down() -> bool:
+    return time.monotonic() < _cooldown_until
+
+
+def _start_cooldown(retry_after: str | None) -> None:
+    global _cooldown_until
+    try:
+        seconds = max(1.0, float(retry_after)) if retry_after else _DEFAULT_COOLDOWN_SECONDS
+    except (TypeError, ValueError):
+        seconds = _DEFAULT_COOLDOWN_SECONDS  # Groq sometimes sends an HTTP-date
+    _cooldown_until = time.monotonic() + min(seconds, 900)
+    log.warning("Groq rate-limited (429) - pausing LLM calls for %.0fs", seconds)
+
+
+def reset_cooldown() -> None:
+    """Test hook, and a manual escape hatch. Nothing in the request path calls it."""
+    global _cooldown_until
+    _cooldown_until = 0.0
+
+
+def llm_enabled() -> bool:
+    """Is there any point attempting a call? Used to avoid burning a rate-limit
+    slot when the feature is simply switched off."""
+    return bool((settings.groq_api_key or "").strip()) and not is_cooling_down()
 
 
 def _headers(api_key: str) -> dict[str, str]:
@@ -103,6 +138,8 @@ def generate_suggestions(
     api_key = (settings.groq_api_key or "").strip()
     if not api_key:
         return None  # feature simply off — not an error, don't log
+    if is_cooling_down():
+        return None  # already 429'd recently; don't spend a round trip finding out again
 
     model = (settings.groq_model or "llama-3.3-70b-versatile").strip()
     try:
@@ -121,8 +158,14 @@ def generate_suggestions(
             },
             timeout=30,
         )
+        if resp.status_code == 429:
+            # Quota exhausted. Same outcome as any other failure for this caller
+            # (rule-based suggestions), plus a cooldown so the next callers skip
+            # the round trip entirely.
+            _start_cooldown(resp.headers.get("Retry-After"))
+            return None
         if resp.status_code != 200:
-            # 401 bad key, 404 wrong model name, 429 quota — all just fall back.
+            # 401 bad key, 404 wrong model name — all just fall back.
             log.warning("Groq %s returned HTTP %s: %s", model, resp.status_code, resp.text[:200])
             return None
 

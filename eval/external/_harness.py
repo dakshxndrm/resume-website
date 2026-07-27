@@ -17,6 +17,12 @@ import os
 import sys
 from pathlib import Path
 
+# Windows consoles default to cp1252 and these reports print box bars and em-dashes.
+# Without this the histogram crashes the run with UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 BACKEND = Path(__file__).resolve().parents[2] / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))

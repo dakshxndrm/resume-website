@@ -69,8 +69,11 @@ export interface ScoreReport {
   verdict: string;
   categories: CategoryScore[];
   suggestions: Suggestion[];
-  /** Whether `suggestions` came from the LLM or the rule-based fallback. */
-  suggestionsSource?: "ai" | "rules";
+  /** Where `suggestions` came from.
+   *  "ai"    — a fresh LLM call
+   *  "cache" — a previous LLM answer for the same resume + job description
+   *  "rules" — the rule-based fallback (LLM off, over the daily cap, or it failed) */
+  suggestionsSource?: "ai" | "cache" | "rules";
   missingSkills: string[];
   createdAt: string;
 }

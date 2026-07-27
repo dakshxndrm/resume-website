@@ -2,7 +2,8 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, String, Text, Boolean
+from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text,
+                        UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -55,6 +56,44 @@ class ScoreReportRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     resume: Mapped["ResumeRecord | None"] = relationship(back_populates="reports")
+
+
+class SuggestionCache(Base):
+    """Cached LLM suggestions, keyed by a hash of (resume text, job description).
+
+    Exists to stop paying Groq for a request we have already answered — the live
+    editor re-scores on every edit, and most of those edits do not change the
+    advice. See app/services/llm_cache.py for the key derivation and the TTL.
+
+    PRIVACY: `cache_key` is a hash, but `suggestions` is feedback written about a
+    real resume, and `user_id` links it to a person. These rows are user data and
+    DELETE /users/me removes them. Anonymous rows carry user_id NULL and expire by
+    TTL instead.
+    """
+    __tablename__ = "suggestion_cache"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    cache_key: Mapped[str] = mapped_column(String, unique=True, index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    suggestions: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class LlmUsage(Base):
+    """One row per (caller, UTC day) counting LLM calls, for the daily cap.
+
+    `subject` is "user:<id>" for signed-in callers and "ip:<address>" for anonymous
+    ones. Counting in Postgres rather than in memory because the free-tier quota is
+    shared across every worker process, and an in-memory counter resets on deploy —
+    which is exactly when a burst would blow the quota.
+    """
+    __tablename__ = "llm_usage"
+    __table_args__ = (UniqueConstraint("subject", "day", name="uq_llm_usage_subject_day"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    subject: Mapped[str] = mapped_column(String, index=True)
+    day: Mapped[str] = mapped_column(String, index=True)  # "YYYY-MM-DD", UTC
+    count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class TrainingExample(Base):

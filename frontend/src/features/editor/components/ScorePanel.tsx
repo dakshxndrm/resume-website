@@ -13,6 +13,14 @@ import { SuggestionCard } from "@/features/score/components/SuggestionCard";
 import type { ScoreStatus } from "../hooks/useLiveScore";
 import type { ScoreReport } from "@/types/resume";
 
+/** "cache" is still AI-written advice, just not paid for twice — saying "cached"
+ *  is more honest than calling it fresh, and less confusing than "rule-based". */
+const SUGGESTION_SOURCE_LABEL: Record<NonNullable<ScoreReport["suggestionsSource"]>, string> = {
+  ai: "by AI",
+  cache: "by AI (cached)",
+  rules: "rule-based",
+};
+
 export function ScorePanel({
   report, status, error, onRetry,
 }: {
@@ -66,7 +74,7 @@ export function ScorePanel({
                   Re-scoring…
                 </>
               ) : (
-                report && `Updated · suggestions ${report.suggestionsSource === "ai" ? "by AI" : "rule-based"}`
+                report && `Updated · suggestions ${SUGGESTION_SOURCE_LABEL[report.suggestionsSource ?? "rules"]}`
               )}
             </p>
           </>

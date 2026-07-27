@@ -1,26 +1,3 @@
-TASK: Extend ml/data/prepare.py toward real pretraining scale. Work ONLY inside ml/
-and data/ — another session may be editing eval/ and backend/.
-
-CONTEXT: ml/README.md states pretraining needs 50k-100k documents for any signal.
-Current sample is ~24 fake records. The datasets below total under 3,000 real resumes,
-which is NOT enough — document this gap honestly rather than pretending otherwise.
-
-1) Add loaders for:
-   - CareerCorpus (Mendeley wzzwn37gmd, .xlsx, 302)
-   - Kaggle snehaanbhawal/resume-dataset (2,482)
-   - HuggingFace jensjorisdecorte/anonymous-working-histories
-   - Investigate the ~70,000-resume corpus referenced in arxiv 1607.07657 and report
-     whether it is actually downloadable and under what licence. This is the only source
-     in the right size range — if it is not obtainable, say so plainly.
-   Normalize all into the existing JSONL format. Document licences per source.
-
-2) Update ml/README.md with a data-inventory table: source, count, licence, and whether
-   it is real or synthetic. State the running total against the 50k target.
-
-3) Report honestly: with the data actually obtainable today, is pretraining worth running
-   at all, or should the JEPA track stay parked until live consented traffic arrives?
-
-Do not commit any downloaded data. Do not touch backend/, frontend/, or eval/.
 "use client";
 /** On-screen preview. Mirrors the single-column layout of the exported PDF so
  *  what you see here is what an ATS parser gets. */

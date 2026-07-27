@@ -18,6 +18,7 @@ less than 0.70; a scorer cannot meaningfully exceed the humans who labelled it.
 from __future__ import annotations
 
 import argparse
+import re
 import statistics
 import sys
 from collections import defaultdict
@@ -70,16 +71,28 @@ def detect_columns(records: list[dict]) -> tuple[str, list[str], str | None]:
         vals = [r.get(col) for r in sample]
         return sum(1 for v in vals if isinstance(v, (int, float))) / max(1, len(vals))
 
+    def looks_like_id(col: str) -> bool:
+        """A row counter is numeric and near-unique — never an annotation score."""
+        if re.fullmatch(r"(unnamed:?\s*\d*|s\.?\s*no\.?|sr\.?\s*no\.?|id|index|no)", col.strip(), re.I):
+            return True
+        vals = [r.get(col) for r in sample if isinstance(r.get(col), (int, float))]
+        return len(vals) > 5 and len(set(vals)) / len(vals) > 0.9
+
     text_col = max(header, key=avg_len)
 
-    score_cols = [c for c in header
-                  if c != text_col and numeric_share(c) > 0.8 and avg_len(c) < 12]
-    # keep the two that look most like parallel annotations
-    score_cols = sorted(score_cols, key=lambda c: -numeric_share(c))[:2]
+    numeric = [c for c in header
+               if c != text_col and numeric_share(c) > 0.8 and avg_len(c) < 12
+               and not looks_like_id(c)]
+    # A name hint beats the numeric heuristic: the two expert columns are the ones
+    # actually called something like "Annotator 1" / "Expert Score", and picking an
+    # unrelated numeric column here silently correlates the scorer against noise.
+    named = [c for c in numeric
+             if re.search(r"annot|score|rating|rate|expert|grade|eval|label", c, re.I)]
+    score_cols = (named or numeric)[:2]
 
     category_col = None
     for col in header:
-        if col in (text_col, *score_cols):
+        if col in (text_col, *score_cols) or numeric_share(col) > 0.8:
             continue
         values = {str(r.get(col)) for r in sample}
         if 2 <= len(values) <= 12 and avg_len(col) < 40:

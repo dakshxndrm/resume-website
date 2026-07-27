@@ -2,7 +2,8 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import (APIRouter, Depends, File, Form, HTTPException, Request, Response,
+                     UploadFile)
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -11,13 +12,29 @@ from app.core.auth import get_current_user, get_optional_user
 from app.core.config import settings
 from app.core.db import get_db
 from app.models.models import ResumeRecord, ScoreReportRecord, TrainingExample, User
-from app.services.llm_router import generate_suggestions, ping
+from app.services import llm_cache
+from app.services.llm_router import generate_suggestions, llm_enabled, ping
 from app.services.parsing import parse_resume
 from app.services.pdf_export import build_resume_pdf, is_empty_resume, safe_filename
 from app.services.privacy import anonymize_resume
 from app.services.scoring import score_resume
 
 router = APIRouter()
+
+
+def _client_ip(request: Request) -> str | None:
+    """Caller IP for the anonymous rate-limit bucket.
+
+    X-Forwarded-For first because the app runs behind Railway/Render's proxy, where
+    request.client.host is the proxy, not the user. Take the leftmost entry — the
+    original client. It is spoofable by a determined caller; this limit protects a
+    shared free-tier quota from ordinary traffic, not from an attacker.
+    ponytail: trust the header, tighten to a trusted-proxy count if abuse shows up.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else None
 
 
 def _now_iso() -> str:
@@ -37,12 +54,54 @@ def _resume_to_text(resume: dict) -> str:
     return json.dumps(resume, ensure_ascii=False)
 
 
-def _apply_llm_suggestions(result: dict, resume_text: str, job_description: str | None) -> dict:
-    """Swap in AI suggestions if we got any; otherwise keep the rule-based ones."""
+def _apply_llm_suggestions(result: dict, resume_text: str, job_description: str | None,
+                           db: Session | None = None, user: User | None = None,
+                           client_ip: str | None = None) -> dict:
+    """Swap in AI suggestions if we can get any; otherwise keep the rule-based ones.
+
+    Order is cheapest-first, and every step degrades to the step below it:
+
+      1. cache hit          -> suggestionsSource "cache", no Groq call at all
+      2. LLM off / cooling  -> "rules"
+      3. over the daily cap -> "rules"
+      4. Groq answers       -> "ai", and the answer is cached for next time
+      5. anything else      -> "rules"
+
+    `db` is optional so the function still works uncached — every cache and
+    rate-limit operation is best-effort and cannot break scoring.
+    """
+    key = None
+    if db is not None:
+        try:
+            key = llm_cache.cache_key(resume_text, job_description)
+            cached = llm_cache.get_cached(db, key)
+            if cached:
+                return {**result, "suggestions": cached, "suggestionsSource": "cache"}
+        except Exception as exc:  # a broken cache is a cache miss, nothing more
+            print(f"WARNING: suggestion cache lookup failed: {type(exc).__name__}: {exc}")
+            key = None
+
+    if not llm_enabled():
+        return {**result, "suggestionsSource": "rules"}
+
+    user_id = user.id if user else None
+    if db is not None:
+        try:
+            if not llm_cache.within_limit(db, user_id, client_ip):
+                # Over the daily cap: a real report with rule-based advice, never
+                # an error and never a fabricated score.
+                return {**result, "suggestionsSource": "rules"}
+            llm_cache.record_call(db, user_id, client_ip)
+        except Exception as exc:
+            print(f"WARNING: rate-limit check failed: {type(exc).__name__}: {exc}")
+
     ai = generate_suggestions(resume_text, job_description, result)
-    if ai:
-        return {**result, "suggestions": ai, "suggestionsSource": "ai"}
-    return {**result, "suggestionsSource": "rules"}
+    if not ai:
+        return {**result, "suggestionsSource": "rules"}
+
+    if db is not None and key:
+        llm_cache.put_cached(db, key, ai, user_id)
+    return {**result, "suggestions": ai, "suggestionsSource": "ai"}
 
 
 def _log_training_example(db: Session, user: User | None, report_id: str,
@@ -138,9 +197,10 @@ def set_consent(body: ConsentIn, claims: dict = Depends(get_current_user),
 def delete_me(claims: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Erase everything belonging to this user, children before parents.
 
-    Order matters — training_examples -> score_reports -> resumes -> user — because
-    each step's rows point at the next one's. Reports are matched by user_id *and*
-    by resume, so a report attached only to a resume is not left orphaned.
+    Order matters — training_examples -> cached suggestions -> score_reports ->
+    resumes -> user — because each step's rows point at the next one's. Reports are
+    matched by user_id *and* by resume, so a report attached only to a resume is not
+    left orphaned.
 
     One transaction: a partial delete would be worse than none, because the user
     would be told their data is gone when some of it is not.
@@ -155,12 +215,15 @@ def delete_me(claims: dict = Depends(get_current_user), db: Session = Depends(ge
     report_ids = [r.id for r in reports]
 
     deleted = {"trainingExamples": 0, "scoreReports": len(report_ids),
-               "resumes": len(resume_ids)}
+               "resumes": len(resume_ids), "cachedSuggestions": 0}
     try:
         if report_ids:
             deleted["trainingExamples"] = db.query(TrainingExample).filter(
                 TrainingExample.report_id.in_(report_ids)
             ).delete(synchronize_session=False)
+        # Cached suggestions are feedback written about this person's resume, so
+        # they are user data and go with the rest of it.
+        deleted["cachedSuggestions"] = llm_cache.purge_for_user(db, user.id)
         for report in reports:
             db.delete(report)
         for resume in db.query(ResumeRecord).filter_by(user_id=user.id).all():
@@ -176,16 +239,18 @@ def delete_me(claims: dict = Depends(get_current_user), db: Session = Depends(ge
 
 # ---------- scoring ----------
 @router.post("/score")
-def score(req: ScoreRequest, claims: dict | None = Depends(get_optional_user), db: Session = Depends(get_db)):
+def score(req: ScoreRequest, request: Request,
+          claims: dict | None = Depends(get_optional_user), db: Session = Depends(get_db)):
     """Score a structured resume. Works logged-out (frictionless); persists when logged in."""
     result = score_resume(req.resume, req.job_description)
-    result = _apply_llm_suggestions(result, _resume_to_text(req.resume), req.job_description)
+    user = db.query(User).filter_by(firebase_uid=claims["uid"]).first() if claims else None
+    result = _apply_llm_suggestions(result, _resume_to_text(req.resume), req.job_description,
+                                    db=db, user=user, client_ip=_client_ip(request))
     report_id = str(uuid.uuid4())
     payload = {**result, "id": report_id, "jobTitle": _job_title(req.job_description),
                "createdAt": _now_iso()}
 
     if claims:
-        user = db.query(User).filter_by(firebase_uid=claims["uid"]).first()
         db.add(ScoreReportRecord(
             id=report_id, user_id=user.id if user else None,
             job_title=_job_title(req.job_description),
@@ -200,6 +265,7 @@ def score(req: ScoreRequest, claims: dict | None = Depends(get_optional_user), d
 
 @router.post("/score/upload")
 async def score_upload(
+    request: Request,
     file: UploadFile = File(...),
     job_description: str | None = Form(None),
     claims: dict | None = Depends(get_optional_user),
@@ -216,15 +282,16 @@ async def score_upload(
             "PDF, or a legacy .doc, please re-save it as a text-based PDF or .docx."
         ))
 
-    result = score_resume(parsed, job_description)
-    result = _apply_llm_suggestions(result, parsed["raw_text"], job_description)
-    report_id = str(uuid.uuid4())
-    payload = {**result, "id": report_id, "jobTitle": _job_title(job_description),
-               "createdAt": _now_iso()}
-
     # Attach the report to the signed-in user when there is one, so "delete my data"
     # can actually find it later. Anonymous uploads stay unattached, as before.
     user = db.query(User).filter_by(firebase_uid=claims["uid"]).first() if claims else None
+
+    result = score_resume(parsed, job_description)
+    result = _apply_llm_suggestions(result, parsed["raw_text"], job_description,
+                                    db=db, user=user, client_ip=_client_ip(request))
+    report_id = str(uuid.uuid4())
+    payload = {**result, "id": report_id, "jobTitle": _job_title(job_description),
+               "createdAt": _now_iso()}
 
     # Persistence is best-effort: a DB hiccup must not throw away a finished report.
     try:

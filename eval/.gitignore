@@ -14,3 +14,4 @@ external/data/
 # Benchmark output
 results/
 *.out
+__pycache__/

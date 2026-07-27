@@ -164,7 +164,8 @@ def test_delete_removes_every_related_row(authed, db_session, user):
 
     r = authed.delete("/users/me")
     assert r.status_code == 200
-    assert r.json()["deleted"] == {"trainingExamples": 1, "scoreReports": 1, "resumes": 1}
+    assert r.json()["deleted"] == {"trainingExamples": 1, "scoreReports": 1,
+                                   "resumes": 1, "cachedSuggestions": 0}
 
     db_session.expire_all()
     assert db_session.query(TrainingExample).count() == 0

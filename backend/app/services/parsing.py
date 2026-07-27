@@ -45,9 +45,35 @@ _SKILL_PATTERNS = sorted(SKILL_VOCAB, key=len, reverse=True)
 _DEGREE_WORDS = ["b.tech", "btech", "b.e", "bachelor", "master", "m.tech",
                  "phd", "diploma", "b.sc", "m.sc", "mba", "b.com"]
 
-_EXP_HEADINGS = ["experience", "work history", "employment", "internship"]
-_PROJ_HEADINGS = ["projects", "personal projects", "academic projects"]
-_EDU_HEADINGS = ["education", "academic", "qualification"]
+# Heading text that starts each section, normalised (lowercase, punctuation
+# stripped). A line is a heading only if it matches one of these *exactly* — a
+# sentence that merely mentions "experience" is body text, not a new section.
+_SECTION_ALIASES: dict[str, tuple[str, ...]] = {
+    "experience": (
+        "experience", "work experience", "professional experience", "work history",
+        "employment", "employment history", "additional experience", "internship",
+        "internships", "career history",
+    ),
+    "education": (
+        "education", "academics", "academic background", "qualification",
+        "qualifications", "educational qualifications",
+    ),
+    "projects": (
+        "projects", "personal projects", "academic projects", "side projects",
+        "selected projects",
+    ),
+    "skills": ("skills", "technical skills", "core competencies", "competencies"),
+    "summary": ("summary", "objective", "profile", "about", "about me"),
+}
+
+_DATE_RANGE = re.compile(
+    r"(?:19|20)\d{2}\s*[-–—to]+\s*(?:(?:19|20)\d{2}|present|current|now)",
+    flags=re.I,
+)
+_DEGREE_RE = re.compile(
+    r"(?<![a-z])(?:" + "|".join(re.escape(w) for w in _DEGREE_WORDS) + r")(?![a-z])",
+    flags=re.I,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -120,36 +146,68 @@ def _pretty_skill(s: str) -> str:
     return special.get(s, s.title())
 
 
-def _count_entries(text: str, headings: list[str], item_words: list[str] | None = None) -> int:
-    """Very light heuristic: how many entries a section likely has.
+def _heading_of(line: str) -> str | None:
+    """Which section this line opens, or None if it is body text."""
+    norm = " ".join(re.sub(r"[^a-z ]+", " ", line.lower()).split())
+    if not norm or len(norm.split()) > 5:
+        return None
+    for name, aliases in _SECTION_ALIASES.items():
+        if norm in aliases:
+            return name
+    return None
 
-    Counts date-range lines (e.g. '2021 - 2023', 'Jan 2020 - Present') inside the
-    text, falling back to counting given keyword hits. Good enough as a real signal
-    until proper section parsing (spaCy) lands.
+
+def split_sections(text: str) -> dict[str, str]:
+    """Split a resume into {section name: body text}.
+
+    Text before the first heading lands under "_preamble". A heading that appears
+    twice (EXPERIENCE ... ADDITIONAL EXPERIENCE) merges into one section.
+
+    This exists because counting date ranges across the whole document made work,
+    education and projects return the *same* number every time — one signal driving
+    45% of the score. Counting inside a section keeps them independent.
     """
-    date_ranges = re.findall(
-        r"(?:19|20)\d{2}\s*[-–—to]+\s*(?:(?:19|20)\d{2}|present|current|now)",
-        text, flags=re.I,
-    )
-    if date_ranges:
-        return len(date_ranges)
-    if item_words:
-        return sum(1 for w in item_words if re.search(re.escape(w), text, flags=re.I))
-    # last resort: is any heading present at all?
-    return 1 if any(h in text.lower() for h in headings) else 0
+    sections: dict[str, list[str]] = {}
+    current, buf = "_preamble", []
+    for line in (text or "").splitlines():
+        heading = _heading_of(line)
+        if heading:
+            sections.setdefault(current, []).extend(buf)
+            current, buf = heading, []
+            continue
+        buf.append(line)
+    sections.setdefault(current, []).extend(buf)
+    return {name: "\n".join(lines) for name, lines in sections.items()}
+
+
+def _count_section_entries(section: str | None) -> int:
+    """How many entries a *single section* holds. 0 when the section is absent.
+
+    Date ranges are the primary signal; a section with none (a resume that lists no
+    dates, or a projects list) falls back to blank-line-separated blocks. There is
+    deliberately no document-wide fallback — that was the bug.
+    """
+    if not section or not section.strip():
+        return 0
+    dates = len(_DATE_RANGE.findall(section))
+    if dates:
+        return dates
+    return len([b for b in re.split(r"\n\s*\n", section) if b.strip()])
 
 
 def parse_resume(file_bytes: bytes, filename: str) -> dict[str, Any]:
     """Turn an uploaded file into the structured dict the scorer expects."""
     text = extract_text(file_bytes, filename)
+    sections = split_sections(text)
 
     skills = extract_skills(text)
-    exp_count = _count_entries(text, _EXP_HEADINGS)
-    edu_count = _count_entries(text, _EDU_HEADINGS, item_words=_DEGREE_WORDS)
-    proj_count = max(
-        _count_entries(text, _PROJ_HEADINGS),
-        len(re.findall(r"\bproject\b", text, flags=re.I)) // 2,
-    )
+    exp_count = _count_section_entries(sections.get("experience"))
+    # education is degree-driven: "B.Tech ... M.Sc ..." is two entries even when
+    # neither carries a date range.
+    edu_section = sections.get("education")
+    edu_count = (len(_DEGREE_RE.findall(edu_section)) if edu_section else 0) or \
+        _count_section_entries(edu_section)
+    proj_count = _count_section_entries(sections.get("projects"))
 
     # scorer counts list length, so build placeholder-entry lists of the right size
     return {
