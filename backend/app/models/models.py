@@ -105,3 +105,19 @@ class TrainingExample(Base):
     anonymized_resume: Mapped[dict] = mapped_column(JSON)  # PII stripped before storage
     teacher_output: Mapped[dict] = mapped_column(JSON)  # LLM score + suggestions
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class OnetSkill(Base):
+    """O*NET's (occupation, skill, importance) rows — see scripts/ingest_onet.py for
+    provenance and licensing. `embedding` is filled in by a later migration once
+    pgvector is enabled; NULL until then, and skills_rag falls back to keyword
+    matching for any row without one.
+    """
+    __tablename__ = "onet_skills"
+    __table_args__ = (UniqueConstraint("occupation", "skill", name="uq_onet_skill"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    occupation: Mapped[str] = mapped_column(String, index=True)
+    skill: Mapped[str] = mapped_column(String, index=True)
+    importance: Mapped[float] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String)  # "skills" | "technology_skills"

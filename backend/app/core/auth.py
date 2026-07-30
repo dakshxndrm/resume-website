@@ -4,6 +4,8 @@ The frontend sends `Authorization: Bearer <firebase-id-token>` on every request.
 We verify it with firebase-admin and return the decoded claims (uid, email, name).
 Postgres rows are keyed by the Firebase UID — Firebase = identity, Postgres = data.
 """
+import base64
+import json
 import os
 
 import firebase_admin
@@ -19,6 +21,14 @@ _bearer = HTTPBearer(auto_error=False)
 def _init_firebase() -> bool:
     if firebase_admin._apps:
         return True
+    # Prod: base64-encoded service-account JSON in an env var (no real filesystem
+    # to drop a secret file into on Render/Railway). Decode straight into a dict —
+    # credentials.Certificate() accepts one, no temp file needed.
+    if settings.firebase_credentials_b64:
+        info = json.loads(base64.b64decode(settings.firebase_credentials_b64))
+        firebase_admin.initialize_app(credentials.Certificate(info))
+        return True
+    # Dev: path to the JSON file on disk.
     if os.path.exists(settings.firebase_credentials):
         firebase_admin.initialize_app(credentials.Certificate(settings.firebase_credentials))
         return True

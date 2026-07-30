@@ -4,6 +4,10 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     database_url: str = "postgresql://user:password@localhost:5432/resumeai"
     firebase_credentials: str = "./firebase-service-account.json"
+    # Prod (Render/Railway etc.): base64 of the whole service-account JSON, since
+    # those hosts don't give you a real filesystem to drop a secret file into.
+    # Takes priority over firebase_credentials when set. See app/core/auth.py.
+    firebase_credentials_b64: str = ""
     frontend_origin: str = "http://localhost:3000"
     gemini_api_key: str = ""
     groq_api_key: str = ""

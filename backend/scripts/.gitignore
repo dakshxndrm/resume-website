@@ -1,0 +1,3 @@
+# Downloaded O*NET files are never committed — fetch manually per ingest_onet.py's
+# module docstring.
+data/
